@@ -193,25 +193,32 @@ void MemoryTracker::injectFault() const
 
 void MemoryTracker::debugLogBigAllocationWithoutCheck(Int64 size [[maybe_unused]])
 {
-    /// Big allocations through allocNoThrow (without checking memory limits) may easily lead to OOM (and it's hard to debug).
+    /// Allocations through allocNoThrow (without checking memory limits) may easily lead to OOM (and it's hard to debug).
     /// Let's find them.
 #ifdef DEBUG_OR_SANITIZER_BUILD
     if (size < 0)
         return;
 
-    constexpr Int64 threshold = 16 * 1024 * 1024;   /// The choice is arbitrary (maybe we should decrease it)
-    if (size < threshold)
+    static Int64 sum = 0;
+    sum += size;
+    constexpr Int64 threshold = 1024 * 1024 * 1024;   /// The choice is arbitrary (maybe we should decrease it)
+    if (sum < threshold)
         return;
+    sum = 0;
 
     MemoryTrackerBlockerInThread blocker(VariableContext::Global);
-    LOG_TEST(getLogger("MemoryTracker"), "Too big allocation ({} bytes) without checking memory limits, "
-                                                   "it may lead to OOM. Stack trace: {}", size, StackTrace().toString());
+    LOG_TEST(
+        getLogger("MemoryTracker"),
+        "Lots of allocations (last is {} bytes) without checking memory limits, it may lead to OOM. Stack trace: {}",
+        size,
+        StackTrace().toString());
 #else
     return;     /// Avoid trash logging in release builds
 #endif
 }
 
-AllocationTrace MemoryTracker::allocImpl(Int64 size, bool throw_if_memory_exceeded, MemoryTracker * query_tracker, double _sample_probability)
+template <bool throw_if_memory_exceeded>
+AllocationTrace MemoryTracker::allocImpl(Int64 size, MemoryTracker * query_tracker, double _sample_probability)
 {
     if (size < 0)
         throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR, "Negative size ({}) is passed to MemoryTracker. It is a bug.", size);
@@ -238,7 +245,7 @@ AllocationTrace MemoryTracker::allocImpl(Int64 size, bool throw_if_memory_exceed
         if (auto * loaded_next = parent.load(std::memory_order_relaxed))
         {
             MemoryTracker * tracker = level == VariableContext::Process ? this : query_tracker;
-            return loaded_next->allocImpl(size, throw_if_memory_exceeded, tracker, _sample_probability);
+            return loaded_next->allocImpl<throw_if_memory_exceeded>(size, tracker, _sample_probability);
         }
 
         return AllocationTrace(_sample_probability);
@@ -398,16 +405,20 @@ AllocationTrace MemoryTracker::allocImpl(Int64 size, bool throw_if_memory_exceed
     if (auto * loaded_next = parent.load(std::memory_order_relaxed))
     {
         MemoryTracker * tracker = level == VariableContext::Process ? this : query_tracker;
-        return loaded_next->allocImpl(size, throw_if_memory_exceeded, tracker, _sample_probability);
+        return loaded_next->allocImpl<throw_if_memory_exceeded>(size, tracker, _sample_probability);
     }
 
     return AllocationTrace(_sample_probability);
 }
 
+template AllocationTrace MemoryTracker::allocImpl<false>(Int64 size, MemoryTracker * query_tracker, double _sample_probability);
+template AllocationTrace MemoryTracker::allocImpl<true>(Int64 size, MemoryTracker * query_tracker, double _sample_probability);
+
 void MemoryTracker::adjustWithUntrackedMemory(Int64 untracked_memory)
 {
+    constexpr bool throw_if_memory_exceeded = false;
     if (untracked_memory > 0)
-        std::ignore = allocImpl(untracked_memory, /*throw_if_memory_exceeded*/ false);
+        std::ignore = allocImpl<throw_if_memory_exceeded>(untracked_memory);
     else
         std::ignore = free(-untracked_memory);
 }

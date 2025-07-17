@@ -37,7 +37,8 @@ MemoryTracker * getMemoryTracker()
 
 using DB::current_thread;
 
-AllocationTrace CurrentMemoryTracker::allocImpl(Int64 size, bool throw_if_memory_exceeded)
+template <bool throw_if_memory_exceeded>
+AllocationTrace CurrentMemoryTracker::allocImpl(Int64 size)
 {
 #ifdef MEMORY_TRACKER_DEBUG_CHECKS
     if (unlikely(memory_tracker_always_throw_logical_error_on_allocation))
@@ -60,7 +61,7 @@ AllocationTrace CurrentMemoryTracker::allocImpl(Int64 size, bool throw_if_memory
 
                 try
                 {
-                    return memory_tracker->allocImpl(current_untracked_memory, throw_if_memory_exceeded);
+                    return memory_tracker->allocImpl<throw_if_memory_exceeded>(current_untracked_memory);
                 }
                 catch (...)
                 {
@@ -72,7 +73,7 @@ AllocationTrace CurrentMemoryTracker::allocImpl(Int64 size, bool throw_if_memory
         /// total_memory_tracker only, ignore untracked_memory
         else
         {
-            return memory_tracker->allocImpl(size, throw_if_memory_exceeded);
+            return memory_tracker->allocImpl<throw_if_memory_exceeded>(size);
         }
 
         return AllocationTrace(memory_tracker->getSampleProbability(size));
@@ -81,22 +82,26 @@ AllocationTrace CurrentMemoryTracker::allocImpl(Int64 size, bool throw_if_memory
     return AllocationTrace(0);
 }
 
+template AllocationTrace CurrentMemoryTracker::allocImpl<false>(Int64 size);
+template AllocationTrace CurrentMemoryTracker::allocImpl<true>(Int64 size);
+
 void CurrentMemoryTracker::check()
 {
+    constexpr bool throw_if_memory_exceeded = true;
     if (auto * memory_tracker = getMemoryTracker())
-        std::ignore = memory_tracker->allocImpl(0, true);
+        std::ignore = memory_tracker->allocImpl<throw_if_memory_exceeded>(0);
 }
 
 AllocationTrace CurrentMemoryTracker::alloc(Int64 size)
 {
-    bool throw_if_memory_exceeded = true;
-    return allocImpl(size, throw_if_memory_exceeded);
+    constexpr bool throw_if_memory_exceeded = true;
+    return allocImpl<throw_if_memory_exceeded>(size);
 }
 
 AllocationTrace CurrentMemoryTracker::allocNoThrow(Int64 size)
 {
-    bool throw_if_memory_exceeded = false;
-    return allocImpl(size, throw_if_memory_exceeded);
+    constexpr bool throw_if_memory_exceeded = false;
+    return allocImpl<throw_if_memory_exceeded>(size);
 }
 
 AllocationTrace CurrentMemoryTracker::free(Int64 size)
